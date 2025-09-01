@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  tgtracker:
+    build: ../bot
+    env_file:
+      - ../bot/.env.example  # замените на .env
+    ports:
+      - "8080:8080"
+    secrets:
+      - sa.json
+    volumes:
+      - ../bot:/app
+    restart: unless-stopped
+secrets:
+  sa.json:
+    file: ./sa.json

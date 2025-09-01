@@ -1,0 +1,5 @@
+*.pyc
+bot/.venv
+
+*.env
+bot/sa.json
