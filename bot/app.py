@@ -225,7 +225,7 @@ def build_main_kb() -> ReplyKeyboardMarkup:
 
     # Разкладка
     rows = [
-        [KeyboardButton(text="➕ /add"), KeyboardButton(text="/my")],
+        [KeyboardButton(text="/add"), KeyboardButton(text="/my")],
     ]
 
     # Добавим ряд(а) с лейблами по 3 кнопки
