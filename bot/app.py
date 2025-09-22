@@ -3,10 +3,9 @@ import asyncio
 import logging
 import time
 import uuid
-from fastapi import FastAPI, Request, Response, Header
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, Update
+from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, date, time as dtime, timedelta
@@ -23,15 +22,13 @@ from functools import wraps
 setup_logging()
 log = logging.getLogger("app")
 
-# --------- Telegram bot и FastAPI ---------
+# --------- Telegram bot ---------
 bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
     default=DefaultBotProperties(parse_mode="HTML")
 )
 dp = Dispatcher()
-app = FastAPI()
 scheduler = AsyncIOScheduler(timezone=config.TZ)
-
 
 # =================== Helpers ===================
 
@@ -90,7 +87,7 @@ def with_timing(fn_name: str):
         async def wrapper(*args, **kwargs):
             t0 = time.perf_counter()
             try:
-                return await func(*args)  # не передаём kwargs aiogram
+                return await func(*args)
             finally:
                 dt = (time.perf_counter() - t0) * 1000
                 log.info("handler_timing", extra={"handler": fn_name, "ms": round(dt, 2)})
@@ -106,7 +103,7 @@ def _to_aware(dt_naive, tzname: str):
 def parse_when(text: str, tzname: str) -> datetime:
     """
     Парсер времени:
-    - Абсолютно: "2025-09-05 14:30", "2025-09-05", "2025-09-05T14:30"
+    - Абсолютно: "2025-09-05 14:30"
     - Относительно: "+30m", "+2h", "+1d"
     - Русские краткие: "завтра 10:00", "сегодня 18:00"
     """
@@ -156,29 +153,6 @@ def parse_when(text: str, tzname: str) -> datetime:
     else:
         dt = dt.astimezone(pytz.timezone(config.TZ))
     return dt
-
-
-# =================== Middleware logging ===================
-
-async def _log_update(update: Update):
-    cid = str(uuid.uuid4())[:8]
-    u = update.model_dump(exclude_none=True)
-    chat_id, user_id, text = None, None, None
-    try:
-        if "message" in u:
-            msg = u["message"]
-            chat_id = msg["chat"]["id"]
-            user_id = msg["from"]["id"]
-            text = msg.get("text")
-        elif "edited_message" in u:
-            msg = u["edited_message"]
-            chat_id = msg["chat"]["id"]
-            user_id = msg["from"]["id"]
-            text = msg.get("text")
-    except Exception:
-        pass
-    log.info("update_in", extra={"cid": cid, "chat_id": chat_id, "user_id": user_id, "text": text})
-    return cid
 
 
 # =================== Commands ===================
@@ -326,89 +300,7 @@ async def send_daily_summary():
     await _send_chat("\n".join(lines), thread_label=config.SUMMARY_LABEL)
 
 
-@with_timing("send_overdue_reminders")
-async def send_overdue_reminders():
-    od = _overdue_tasks()
-    if not od:
-        return
-    lines = ["<b>Просроченные задачи</b>"]
-    for r in od[:50]:
-        first_label = (r.get("Labels") or "").split(",")[0].strip() if r.get("Labels") else None
-        lines.append(f"• <code>{r['ID']}</code> <b>{r['Title']}</b> — {r.get('Assignee') or '—'} (до {r.get('Due')})"
-                     + (f" • #{first_label}" if first_label else ""))
-    await _send_chat("\n".join(lines), thread_label=config.SUMMARY_LABEL)
-
-
 def schedule_jobs():
     hh, mm = _parse_hhmm(config.DAILY_SUMMARY_HHMM)
     scheduler.add_job(send_daily_summary, "cron", hour=hh, minute=mm, id="daily_summary", replace_existing=True)
-    scheduler.add_job(tick_reminders, "interval", minutes=1, id="tick_reminders", replace_existing=True)
-
-    hh2, mm2 = _parse_hhmm(config.OVERDUE_REMINDER_HHMM)
-    scheduler.add_job(send_overdue_reminders, "cron", hour=hh2, minute=mm2, id="overdue_reminders", replace_existing=True)
     scheduler.start()
-
-
-@with_timing("tick_reminders")
-async def tick_reminders():
-    now_iso = _now_tz().isoformat()
-    due = sheets.due_reminders(now_iso)
-    if not due:
-        return
-
-    for r in due:
-        try:
-            thread_id = int(str(r.get("ThreadID") or "").strip()) if r.get("ThreadID") else None
-        except Exception:
-            thread_id = None
-
-        text = (f"⏰ <b>Напоминание по задаче</b>\n"
-                f"ID: <code>{r['TaskID']}</code>\n"
-                f"Время: {r['WhenISO']}")
-
-        try:
-            await _send_chat(text, fallback_thread_id=thread_id,
-                             reminder_id=r.get("ID"), task_id=r.get("TaskID"))
-            sheets.remove_reminder(r["ID"])
-        except Exception as e:
-            log.error("reminder_send_failed", extra={"error": str(e), "reminder": r})
-
-
-# =================== Webhook ===================
-
-@app.on_event("startup")
-async def on_startup():
-    # Проверка важных переменных окружения
-    if not config.TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан!")
-
-    # Проверка наличия листов
-    sheets.ensure_task_headers()
-    sheets.ensure_threads_sheet()
-    sheets.ensure_reminders_sheet()
-
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(url=f"{config.WEBHOOK_BASE}/tg/webhook", secret_token=config.WEBHOOK_SECRET)
-    schedule_jobs()
-
-
-@app.get("/health")
-async def health():
-    return {"ok": True, "time": _now_tz().isoformat()}
-
-
-@app.post("/tg/webhook")
-async def tg_webhook(request: Request, x_telegram_bot_api_secret_token: str = Header(None)):
-    if config.WEBHOOK_SECRET and x_telegram_bot_api_secret_token != config.WEBHOOK_SECRET:
-        return Response(status_code=401)
-
-    data = await request.json()
-    upd = Update.model_validate(data)
-    cid = await _log_update(upd)
-
-    try:
-        await dp.feed_update(bot, upd)
-    except Exception:
-        log.exception("update_failed", extra={"cid": cid})
-        return Response(status_code=500)
-    return Response(status_code=200)
