@@ -269,3 +269,34 @@ def remove_reminders_by_task(task_id: str) -> int:
     cnt = len(to_delete_rows)
     log.info("reminders_removed_by_task", extra={"task_id": task_id, "count": cnt})
     return cnt
+
+# =================== ENSURE SHEETS ===================
+
+def ensure_threads_sheet():
+    """
+    Проверяет наличие листа 'threads' и создает его при отсутствии.
+    Колонки: Label | ThreadID | CreatedAt
+    """
+    sh = _sh()
+    try:
+        sh.worksheet(config.GSHEET_THREADS_SHEET)
+        log.info("threads_sheet_exists")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(config.GSHEET_THREADS_SHEET, rows=100, cols=3)
+        ws.update("A1:C1", [["Label", "ThreadID", "CreatedAt"]])
+        log.info("threads_sheet_created")
+
+
+def ensure_reminders_sheet():
+    """
+    Проверяет наличие листа 'reminders' и создает его при отсутствии.
+    Колонки: ID | TaskID | WhenISO | ChatID | ThreadID | CreatedAt | CreatedBy
+    """
+    sh = _sh()
+    try:
+        sh.worksheet("reminders")
+        log.info("reminders_sheet_exists")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet("reminders", rows=500, cols=7)
+        ws.update("A1:G1", [["ID", "TaskID", "WhenISO", "ChatID", "ThreadID", "CreatedAt", "CreatedBy"]])
+        log.info("reminders_sheet_created")
