@@ -158,21 +158,22 @@ def parse_when(text: str, tzname: str) -> datetime:
 # =================== Commands ===================
 
 @dp.message(Command("start", "help"))
+@dp.message(Command("start", "help"))
 @with_timing("help")
 async def cmd_help(m: Message):
     await m.reply(
-        """
-<b>Команды</b>:
-/add <текст> — создать задачу
-/list — список задач
-/done <ID> — закрыть задачу
-/assign <ID> @user — назначить
-/due <ID> YYYY-MM-DD — срок
-/who — сводка по людям
-/bind #label — привязать тред к лейблу
-/summary — сводка за сегодня
-/remind <ID> <время> — напоминание (+30m, завтра 10:00)
-        """.strip()
+        (
+            "<b>Команды</b>\n"
+            "/add &lt;текст&gt; — создать задачу\n"
+            "/list — список задач\n"
+            "/done &lt;ID&gt; — закрыть задачу\n"
+            "/assign &lt;ID&gt; @user — назначить\n"
+            "/due &lt;ID&gt; YYYY-MM-DD — срок\n"
+            "/who — сводка по людям\n"
+            "/bind #label — привязать тред к лейблу\n"
+            "/summary — сводка за сегодня\n"
+            "/remind &lt;ID&gt; &lt;время&gt; — напоминание (+30m, завтра 10:00)\n"
+        ).strip()
     )
 
 
