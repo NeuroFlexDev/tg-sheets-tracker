@@ -3,20 +3,27 @@ import asyncio
 import logging
 import time
 import uuid
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.client.default import DefaultBotProperties
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from collections import Counter
+from functools import wraps
 from datetime import datetime, date, time as dtime, timedelta
-from dateutil import parser as dtparser
+
 import pytz
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import Command
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dateutil import parser as dtparser
 
 import config
 import sheets
 from parser import parse_freeform
 from logsetup import setup_logging
-from functools import wraps
 
 # --------- Настройка логирования ---------
 setup_logging()
@@ -155,9 +162,85 @@ def parse_when(text: str, tzname: str) -> datetime:
     return dt
 
 
+def _fmt_task_line(r: dict) -> str:
+    first_label = (r.get("Labels") or "").split(",")[0].strip() if r.get("Labels") else ""
+    return (
+        f"<code>{r['ID']}</code> • <b>{r['Title']}</b> • {r.get('Priority','') or '—'} • "
+        f"{r.get('Assignee','') or '—'}"
+        + (f" • до {r['Due']}" if r.get('Due') else "")
+        + (f" • #{first_label}" if first_label else "")
+    )
+
+
+def _parse_status(tokens: list[str]) -> str | None:
+    statuses = {"open", "in_progress", "done", "blocked"}
+    for t in tokens:
+        if t in statuses:
+            return t
+    return None
+
+
+def _parse_labels(tokens: list[str]) -> list[str]:
+    return [t.lstrip("#") for t in tokens if t.startswith("#")]
+
+
+def _parse_users(tokens: list[str]) -> list[str]:
+    return [t for t in tokens if t.startswith("@")]
+
+
+def _has_any_label(row: dict, labels: list[str]) -> bool:
+    if not labels:
+        return True
+    row_labels = [s.strip() for s in str(row.get("Labels", "")).split(",") if s.strip()]
+    return any(lbl in row_labels for lbl in labels)
+
+
+# ---------- Клавиатуры ----------
+
+def _top_labels(limit: int = 6) -> list[str]:
+    """Вернуть топ-лейблы по частоте использования (для быстрых кнопок)."""
+    try:
+        rows = sheets.list_tasks(status=None)
+        cnt = Counter()
+        for r in rows:
+            labs = [s.strip() for s in str(r.get("Labels", "")).split(",") if s.strip()]
+            cnt.update(labs)
+        return [l for l, _ in cnt.most_common(limit)]
+    except Exception as e:
+        log.warning("top_labels_failed", extra={"err": str(e)})
+        return []
+
+def build_main_kb() -> ReplyKeyboardMarkup:
+    """
+    Reply-клавиатура с быстрыми кнопками:
+    - /add, /my, /my open, /my in_progress, /my done
+    - Топ-лейблы как /labels #<name>
+    - /list open, /summary, /who
+    Кнопки отправляют текст команд (удобно и совместимо).
+    """
+    labels = _top_labels(6)
+    label_buttons = []
+    for l in labels:
+        label_buttons.append(KeyboardButton(text=f"/labels #{l}"))
+
+    # Разкладка
+    rows = [
+        [KeyboardButton(text="➕ /add"), KeyboardButton(text="🧾 /my")],
+        [KeyboardButton(text="My open"), KeyboardButton(text="My in_progress"), KeyboardButton(text="My done")],
+    ]
+
+    # Добавим ряд(а) с лейблами по 3 кнопки
+    if label_buttons:
+        for i in range(0, len(label_buttons), 3):
+            rows.append(label_buttons[i:i+3])
+
+    rows.append([KeyboardButton(text="📋 /list open"), KeyboardButton(text="📊 /summary"), KeyboardButton(text="👤 /who")])
+
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder="Быстрые команды…", selective=True)
+
+
 # =================== Commands ===================
 
-@dp.message(Command("start", "help"))
 @dp.message(Command("start", "help"))
 @with_timing("help")
 async def cmd_help(m: Message):
@@ -165,7 +248,10 @@ async def cmd_help(m: Message):
         (
             "<b>Команды</b>\n"
             "/add &lt;текст&gt; — создать задачу\n"
-            "/list — список задач\n"
+            "/list [status|@assignee|#label] — общий список\n"
+            "/my [status] [#label] — мои задачи\n"
+            "/for @user1 [@user2 ...] [status] [#label] — задачи людей\n"
+            "/labels #lab1 [#lab2 ...] [status] — задачи по лейблам\n"
             "/done &lt;ID&gt; — закрыть задачу\n"
             "/assign &lt;ID&gt; @user — назначить\n"
             "/due &lt;ID&gt; YYYY-MM-DD — срок\n"
@@ -173,8 +259,22 @@ async def cmd_help(m: Message):
             "/bind #label — привязать тред к лейблу\n"
             "/summary — сводка за сегодня\n"
             "/remind &lt;ID&gt; &lt;время&gt; — напоминание (+30m, завтра 10:00)\n"
-        ).strip()
+            "/kb — показать быстрые кнопки, /hidekb — скрыть\n"
+        ).strip(),
+        reply_markup=build_main_kb()
     )
+
+
+@dp.message(Command("kb"))
+@with_timing("keyboard_show")
+async def cmd_kb(m: Message):
+    await m.reply("Быстрые кнопки включены.", reply_markup=build_main_kb())
+
+
+@dp.message(Command("hidekb"))
+@with_timing("keyboard_hide")
+async def cmd_hidekb(m: Message):
+    await m.reply("Клавиатура скрыта. Включить: /kb", reply_markup=ReplyKeyboardRemove())
 
 
 @dp.message(Command("bind"))
@@ -243,6 +343,88 @@ async def cmd_list(m: Message):
             + (f" • #{(r.get('Labels') or '').split(',')[0]}" if r.get('Labels') else "")
         )
     await m.reply("\n".join(lines))
+
+
+@dp.message(Command("my"))
+@with_timing("my")
+async def cmd_my(m: Message):
+    # соберём токены из аргументов
+    args = (m.text or "").split()[1:]
+    status = _parse_status(args)
+    labels = _parse_labels(args)
+
+    me = (m.from_user.username and "@"+m.from_user.username) or None
+    if not me:
+        return await m.reply("У вас нет username в Telegram. Установите его в настройках, чтобы фильтровать по @username.")
+
+    # получим все задачи и отфильтруем по исполнителю и статусу
+    tasks = sheets.list_tasks(status=None, assignee=None, label=None)
+    res = []
+    for r in tasks:
+        if status and r.get("Status") != status:
+            continue
+        if me.lower() not in str(r.get("Assignee","")).lower():
+            continue
+        if not _has_any_label(r, labels):
+            continue
+        res.append(r)
+
+    if not res:
+        return await m.reply("Пусто")
+    await m.reply("\n".join(_fmt_task_line(x) for x in res[:50]))
+
+
+@dp.message(Command("for"))
+@with_timing("for_users")
+async def cmd_for(m: Message):
+    args = (m.text or "").split()[1:]
+    users = _parse_users(args)
+    if not users:
+        return await m.reply("Пример: /for @alice @bob open #frontend")
+
+    status = _parse_status(args)
+    labels = _parse_labels(args)
+
+    tasks = sheets.list_tasks(status=None, assignee=None, label=None)
+    res = []
+    u_lower = [u.lower() for u in users]
+    for r in tasks:
+        if status and r.get("Status") != status:
+            continue
+        ass = str(r.get("Assignee","")).lower()
+        if not any(u in ass for u in u_lower):
+            continue
+        if not _has_any_label(r, labels):
+            continue
+        res.append(r)
+
+    if not res:
+        return await m.reply("Пусто")
+    await m.reply("\n".join(_fmt_task_line(x) for x in res[:50]))
+
+
+@dp.message(Command("labels"))
+@with_timing("labels")
+async def cmd_labels(m: Message):
+    args = (m.text or "").split()[1:]
+    labels = _parse_labels(args)
+    if not labels:
+        return await m.reply("Пример: /labels #frontend #backend open")
+
+    status = _parse_status(args)
+
+    tasks = sheets.list_tasks(status=None, assignee=None, label=None)
+    res = []
+    for r in tasks:
+        if status and r.get("Status") != status:
+            continue
+        if not _has_any_label(r, labels):
+            continue
+        res.append(r)
+
+    if not res:
+        return await m.reply("Пусто")
+    await m.reply("\n".join(_fmt_task_line(x) for x in res[:50]))
 
 
 @dp.message(Command("done"))
