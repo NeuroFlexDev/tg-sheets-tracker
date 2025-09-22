@@ -225,8 +225,7 @@ def build_main_kb() -> ReplyKeyboardMarkup:
 
     # Разкладка
     rows = [
-        [KeyboardButton(text="➕ /add"), KeyboardButton(text="🧾 /my")],
-        [KeyboardButton(text="My open"), KeyboardButton(text="My in_progress"), KeyboardButton(text="My done")],
+        [KeyboardButton(text="➕ /add"), KeyboardButton(text="/my")],
     ]
 
     # Добавим ряд(а) с лейблами по 3 кнопки
@@ -234,7 +233,7 @@ def build_main_kb() -> ReplyKeyboardMarkup:
         for i in range(0, len(label_buttons), 3):
             rows.append(label_buttons[i:i+3])
 
-    rows.append([KeyboardButton(text="📋 /list open"), KeyboardButton(text="📊 /summary"), KeyboardButton(text="👤 /who")])
+    rows.append([KeyboardButton(text="/list open"), KeyboardButton(text="/summary"), KeyboardButton(text="/who")])
 
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder="Быстрые команды…", selective=True)
 
