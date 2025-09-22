@@ -1,16 +1,10 @@
 version: "3.9"
+
 services:
-  tgtracker:
+  bot:
     build: ../bot
-    env_file:
-      - ../bot/.env.example  # замените на .env
-    ports:
-      - "8080:8080"
-    secrets:
-      - sa.json
+    container_name: task-bot
+    restart: always
+    env_file: ../.env
     volumes:
-      - ../bot:/app
-    restart: unless-stopped
-secrets:
-  sa.json:
-    file: ./sa.json
+      - ../sa.json:/run/secrets/sa.json:ro
